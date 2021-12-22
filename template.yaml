@@ -1,0 +1,204 @@
+---
+AWSTemplateFormatVersion: 2010-09-09
+Description: Deploys all needed resources for daily billing notifications from AWS Billing console
+
+Parameters:
+  BotToken:
+    Description: Id of a bot,
+    Type: String
+  TgChatId:
+    Description: Id of a chat to publish messages to
+    Type: String
+  CronExpression:
+    Description: Cron expression that defines the regularity for notifications
+    Type: String
+    Default: 'cron(00 18 * * ? *)'
+
+Resources:
+  EventBridgeRule:
+    Type: AWS::Events::Rule
+    Properties:
+      ScheduleExpression: !Ref CronExpression
+      Targets:
+        - Arn: !Sub '${LambdaBilling.Arn}'
+          Id: 'TargetFunctionV1'
+
+  LambdaPermissions:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt LambdaBilling.Arn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt EventBridgeRule.Arn
+
+  LambdaNotificationLaunchPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt LambdaNotificationFunction.Arn
+      Principal: sns.amazonaws.com
+
+  LambdaNotificationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action:
+              - sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSLambdaExecute
+      Path: /
+
+  LambdaNotificationFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Role: !GetAtt LambdaNotificationRole.Arn
+      FunctionName: !Sub tg-bot-notification-lambda-${AWS::Region}
+      Runtime: python3.7
+      Timeout: 15
+      MemorySize: 128
+      Handler: index.lambda_handler
+      Environment:
+        Variables:
+          BOT_TOKEN: !Ref BotToken
+          CHAT_ID: !Ref TgChatId
+      Code:
+        ZipFile: |
+          import os
+          import json
+          import requests
+
+          BOT_TOKEN = os.getenv('BOT_TOKEN')
+          CHAT_ID = os.getenv('CHAT_ID')
+
+          def tg_sendtext(bot_message):
+             send_text = 'https://api.telegram.org/' + BOT_TOKEN + '/sendMessage?chat_id=' + CHAT_ID + '&parse_mode=Markdown&text=' + bot_message
+             response = requests.get(send_text)
+             return response.json()
+
+          def get_message(item):
+              """
+              Extract message from Cloudformation SNS notification
+              """
+              return item['Sns']['Message']
+
+          def get_cost_unit(m):
+              data = json.loads(m)
+              data = data['body']
+              cost = data['Amount']
+              unit = data['Unit']
+              return cost, unit
+
+          def send_message_to_tg(cost, unit):
+              if not cost:
+                  return
+              if not unit:
+                  unit = ''
+              tg_sendtext(f'Current amortized cost is {float(cost):.2f} {unit}.')
+
+          def lambda_handler(event, context):
+              try:
+                  for item in event['Records']:
+                      message = get_message(item)
+                      cost, unit = get_cost_unit(message)
+                      send_message_to_tg(cost, unit)
+              except Exception: ...
+              return {'statusCode': 200}
+
+  SnsNotificationTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      Subscription:
+        - Endpoint: !GetAtt LambdaNotificationFunction.Arn
+          Protocol: LAMBDA
+
+  LambdaBillingRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub tg-bot-billing-lambda-billing-role-${AWS::Region}
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action:
+              - sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+      Path: '/'
+      Policies:
+        - PolicyName: !Sub tg-bot-billing-lambda-billing-policy-${AWS::Region}
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ce:GetCostAndUsage
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource: !Ref SnsNotificationTopic
+
+  LambdaBilling:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub tg-bot-billing-lambda-${AWS::Region}
+      Role:
+        Fn::GetAtt:
+          - LambdaBillingRole
+          - Arn
+      Runtime: python3.7
+      Timeout: 15
+      MemorySize: 128
+      Handler: index.lambda_handler
+      Environment:
+        Variables:
+          NOTIFICATION_URL: !Ref SnsNotificationTopic
+      Code:
+        ZipFile: |
+          import os
+          from datetime import datetime
+          import json
+          import boto3
+
+          TOPIC_ARN = os.getenv("NOTIFICATION_URL")
+
+          def get_billing():
+              client = boto3.client('ce')
+              now = datetime.now()
+              month = str(now.month)
+
+              if len(month) == 1:
+                  month = f"0{month}"
+
+              response = client.get_cost_and_usage(
+                  TimePeriod={
+                      'Start': f'{now.year}-{month}-01',
+                      'End': f'{now.year}-{month}-{now.day}'
+                  },
+                  Granularity='MONTHLY',
+                  Metrics=['AmortizedCost']
+              )
+              return response['ResultsByTime']
+
+          def publish_sns_message(event):
+
+              message = {"foo": str(get_billing())}
+              client = boto3.client('sns')
+
+              response = client.publish(
+                  TargetArn=TOPIC_ARN,
+                  Message=json.dumps({'body': json.dumps(message), 'type': 'Billing'}),
+                  Subject='Subject'
+              )
+
+          def lambda_handler(event, context):
+              if TOPIC_ARN:
+                  publish_sns_message(event)
+              return {'statusCode': 200}
+
+...
