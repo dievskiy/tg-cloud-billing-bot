@@ -4,7 +4,7 @@ Description: Deploys all needed resources for daily billing notifications from A
 
 Parameters:
   BotToken:
-    Description: Id of a bot,
+    Description: Token for the bot
     Type: String
   TgChatId:
     Description: Id of a chat to publish messages to
@@ -12,7 +12,7 @@ Parameters:
   CronExpression:
     Description: Cron expression that defines the regularity for notifications
     Type: String
-    Default: 'cron(00 18 * * ? *)'
+    Default: 'cron(0 18 * * ? *)'
 
 Resources:
   EventBridgeRule:
@@ -60,6 +60,8 @@ Resources:
       FunctionName: !Sub tg-bot-notification-lambda-${AWS::Region}
       Runtime: python3.7
       Timeout: 15
+      Architectures:
+        - arm64
       MemorySize: 128
       Handler: index.lambda_handler
       Environment:
@@ -154,6 +156,8 @@ Resources:
       Runtime: python3.7
       Timeout: 15
       MemorySize: 128
+      Architectures:
+        - arm64
       Handler: index.lambda_handler
       Environment:
         Variables:
