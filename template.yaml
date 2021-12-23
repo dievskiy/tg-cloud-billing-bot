@@ -60,6 +60,8 @@ Resources:
       FunctionName: !Sub tg-bot-notification-lambda-${AWS::Region}
       Runtime: python3.7
       Timeout: 15
+      Architectures:
+        - arm64
       MemorySize: 128
       Handler: index.lambda_handler
       Environment:
@@ -154,6 +156,8 @@ Resources:
       Runtime: python3.7
       Timeout: 15
       MemorySize: 128
+      Architectures:
+        - arm64
       Handler: index.lambda_handler
       Environment:
         Variables:
