@@ -1,6 +1,6 @@
 Telegram bot logic that sends daily notifications about current costs of the AWS infrastructure.
 
-![](https://i.imgur.com/lAJ4Lkd.jpeg)
+![](https://i.imgur.com/V8ygygi.jpg)
 
 The setup is being deployed into AWS using CloudFormation. Deployed resources are:
 * EventBridge rule
